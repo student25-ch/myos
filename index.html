@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MyOS - 自制x86汇编操作系统</title>
+    <style>
+        *{
+            box-sizing: border-box;
+            margin:0;
+            padding:0;
+            font-family:Consolas, "Microsoft Yahei", sans-serif;
+        }
+        body{
+            background:#111;
+            color:#0f0;
+            padding:2rem;
+            line-height:1.6;
+        }
+        .container{
+            max-width:900px;
+            margin:0 auto;
+        }
+        h1{
+            border-bottom:1px solid #0f0;
+            padding-bottom:0.5rem;
+            margin-bottom:1rem;
+        }
+        pre{
+            background:#000;
+            border:1px solid #333;
+            padding:1rem;
+            overflow-x:auto;
+            margin:1rem 0;
+            color:#ccc;
+        }
+        a{
+            color:#4cf;
+            text-decoration:none;
+        }
+        a:hover{
+            text-decoration:underline;
+        }
+        .note{
+            border:1px solid #ffaa00;
+            padding:1rem;
+            margin:1rem 0;
+            color:#ffd060;
+        }
+        ul{
+            padding-left:1.5rem;
+            margin:1rem 0;
+        }
+        /* 源码下载按钮 */
+        .download-btn{
+            display:inline-block;
+            background:#006622;
+            color:#0f0;
+            border: 2px solid #0f0;
+            padding: 12px 24px;
+            font-size:18px;
+            font-weight:bold;
+            margin:10px 0;
+            border-radius:4px;
+            transition: 0.2s;
+        }
+        .download-btn:hover{
+            background:#0f0;
+            color:#000;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>MyOS</h1>
+        <p>✅ Minimal x86 operating system written in assembly</p>
+        <p>📦 1.44MB 软盘镜像，基于 OSDev Wiki，16位实模式引导器</p>
+        <br>
+
+        <!-- 仓库名改为小写 myos -->
+        <a class="download-btn" href="https://github.com/student25-ch/myos/archive/refs/heads/main.zip" download>
+            📥 下载源码 (ZIP)
+        </a>
+        <p>源码包包含：asm源码、README、.gitignore</p>
+        <p>⚠️ 需要你本地安装 NASM + QEMU 自行编译生成镜像</p>
+        <br>
+
+        <div class="note">
+            ⚠️ 本仓库只存放源代码，不提供预编译myos.img镜像。
+            下载源码后，编译、打包并启动QEMU。
+        </div>
+
+        <h2>项目简介</h2>
+        <p>这是从零手写的极简x86操作系统，由汇编语言编写。包含引导扇区 bootloader 和基础内核，可在 QEMU 模拟器中启动运行。</p>
+
+        <h2>目录结构</h2>
+<pre>
+myos/
+├── boot.asm        # 引导扇区(512字节，0xAA55标记)
+├── kernel.asm      # 内核汇编源码
+├── build.bat       # Windows一键构建脚本
+├── .gitignore
+├── README.md
+└── index.html      # GitHub Pages页面
+</pre>
+
+        <h2>构建命令（手动编译）</h2>
+<pre>
+nasm boot.asm -f bin -o boot.bin
+nasm kernel.asm -f bin -o kernel.bin
+
+fsutil file createnew pad.bin 1474560
+copy /b boot.bin + kernel.bin + pad.bin myos.img
+
+"QEMU路径\qemu-system-i386.exe" -L "QEMU路径" -drive format=raw,file=myos.img,if=floppy
+</pre>
+
+        <h2>开发路线</h2>
+        <ul>
+            <li>[x] 16位实模式引导扇区</li>
+            <li>[x] 软盘镜像打包脚本</li>
+            <li>[ ] 实模式字符串打印</li>
+            <li>[ ] 切换保护模式 & GDT</li>
+            <li>[ ] 键盘中断处理</li>
+            <li>[ ] 简易终端控制台</li>
+        </ul>
+
+        <h2>仓库链接</h2>
+        <p>源码仓库：<a href="https://github.com/student25-ch/myos">github.com/student25-ch/myos</a></p>
+        <p>许可证：MIT License</p>
+    </div>
+</body>
+</html>
