@@ -4,5 +4,5 @@ A minimal x86 operating system written in assembly, built for 1.44MB floppy imag
 
 > This project follows OSDev wiki tutorial, only bootloader + kernel in 16-bit real mode.
 > 项目参考OSDev Wiki教程，实现16位实模式引导加载器与基础内核。
-
-## 📁 Project Structure
+改进者不准闭源！
+> improvers are not allowed to close-source!
