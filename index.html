@@ -97,8 +97,7 @@
 <pre>
 myos/
 ├── boot.asm        # 引导扇区(512字节，0xAA55标记)
-├── kernel.asm      # 内核汇编源码
-├── build.bat       # Windows一键构建脚本
+├── kernel.asm      # 内核汇编源文件
 ├── .gitignore
 ├── README.md
 └── index.html      # GitHub Pages页面
@@ -119,10 +118,10 @@ copy /b boot.bin + kernel.bin + pad.bin myos.img
         <ul>
             <li>[x] 16位实模式引导扇区</li>
             <li>[x] 软盘镜像打包脚本</li>
-            <li>[ ] 实模式字符串打印</li>
-            <li>[ ] 切换保护模式 & GDT</li>
-            <li>[ ] 键盘中断处理</li>
-            <li>[ ] 简易终端控制台</li>
+            <li>[x] 实模式字符串打印</li>
+            <li>[x] 切换保护模式 & GDT</li>
+            <li>[x] 键盘中断处理</li>
+            <li>[x] 简易终端控制台</li>
         </ul>
 
         <h2>仓库链接</h2>
