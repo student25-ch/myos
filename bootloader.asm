@@ -1,4 +1,20 @@
-;Copyright © 2026 [Jasper]
+; -----------------------------------------------------------------------------
+; MyOS Bootloader
+; Copyright (C) 2026 student25‑ch
+;
+; This program is free software: you can redistribute it and/or modify
+; it under the terms of the GNU General Public License as published by
+; the Free Software Foundation, either version 3 of the License, or
+; (at your option) any later version.
+;
+; This program is distributed in the hope that it will be useful,
+; but WITHOUT ANY WARRANTY; without even the implied warranty of
+; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+; GNU General Public License for more details.
+;
+; You should have received a copy of the GNU General Public License
+; along with this program.  If not, see <https://www.gnu.org/licenses/>.
+; -----------------------------------------------------------------------------
 [org 0x7c00]
 [bits 16]
 
@@ -8,7 +24,7 @@ mov es, ax
 mov ss, ax
 mov sp, 0x7c00
 
-;读取内核到0x1000，64扇区(32KB)
+;读取内核到 0x1000，64扇区(32KB)
 mov bx, 0x1000
 mov ah, 0x02
 mov al, 64
@@ -33,11 +49,11 @@ je start_cli
 jmp menu
 
 start_gui:
-mov byte [0x9000], 1
+mov byte [0x1000], 1   ; ✔ 和内核保持同一位置标记
 jmp 0x1000
 
 start_cli:
-mov byte [0x9000], 2
+mov byte [0x1000], 2   ; ✔ 和内核保持同一位置标记
 jmp 0x1000
 
 disk_error:
