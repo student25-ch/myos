@@ -1,3 +1,4 @@
+;Copyright © 2026 [Jasper]
 [org 0x1000]
 [bits 16]
 
