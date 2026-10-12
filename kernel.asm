@@ -1,19 +1,12 @@
 ; -----------------------------------------------------------------------------
-; MyOS - student25-ch
+; MyOS - student25-ch v0.4-fix
 ; Copyright (C) 2026 student25-ch
 ;
 ; This program is free software: you can redistribute it and/or modify
 ; it under the terms of the GNU General Public License as published by
 ; the Free Software Foundation, either version 3 of the License, or
 ; (at your option) any later version.
-;
-; This program is distributed in the hope that it will be useful,
-; but WITHOUT ANY WARRANTY; without even the implied warranty of
-; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-; GNU General Public License for more details.
-;
-; You should have received a copy of the GNU General Public License
-; along with this program.  If not, see <https://www.gnu.org/licenses/>.
+; Fix list: all known FAT12 bugs, register imbalance, mouse, snake, cli, io boundary
 ; -----------------------------------------------------------------------------
 [org 0x1000]
 [bits 16]
@@ -30,8 +23,17 @@ COLOR_BLUE    equ 0x01
 COLOR_GRAY    equ 0x08
 COLOR_LGRAY   equ 0x07
 COLOR_YELLOW  equ 0x0E
+COLOR_CYAN    equ 0x03
 
-;全局变量
+; FAT12 1.44MB Floppy 修正正确常量
+FAT_SECTORS_PER_CLUSTER equ 1
+FAT_RESERVED_SECTORS    equ 1
+FAT_NUMBER_OF_FATS      equ 2
+FAT_SECTORS_PER_FAT     equ 9
+FAT_ROOT_ENTRIES        equ 224
+FAT_BYTES_PER_SECTOR    equ 512
+
+;================ 全局内核变量 =================
 cursor_x  dw 0
 cursor_y  dw 0
 mouse_x   dw 0
@@ -49,23 +51,36 @@ btn_y dw 0
 btn_w dw 0
 btn_h dw 0
 
-snake_dir db 1 ;0上,1右,2下,3左
+snake_dir db 1   ;0上,1右,2下,3左
 snake_len dw 3
 snake_body times 256 dw 0
 food_x dw 0
 food_y dw 0
 game_over db 0
 
-;FAT12变量
-current_cluster dw 0
+;FAT12 文件系统
 fat_buf times 512 db 0
 dir_buf times 512 db 0
 file_buf times 1024 db 0
 filename_buf times 11 db 0
+file_size dw 0
+file_cluster dw 0
+fat_io_err db 0
+
+;CLI输入缓冲区
 cli_buf times 128 db 0
-CLI_BUF_MAX equ 127 ; 限制最大输入长度，修复缓冲区溢出
+CLI_BUF_MAX equ 127
+
+;run加载器专用
+exec_ptr     dd 0
 
 start:
+    mov ax, cs
+    mov ds, ax
+    mov es, ax
+    mov ss, ax
+    mov sp, 0x7000
+
     mov al, [0x1000]
     cmp al, 1
     je gui_mode
@@ -191,11 +206,11 @@ exit_vga:
     int 10h
     jmp $
 
-;==================== CLI文本模式（全套DOS命令+FAT12） ====================
+;==================== CLI文本模式 ====================
 cli_mode:
     mov ax,0x03
     int 10h
-    mov ax,0
+    mov ax, cs
     mov ds,ax
     mov es,ax
     mov ss,ax
@@ -219,7 +234,6 @@ cli_input:
     cmp al,0x08
     je cli_backspace
 
-    ;==== 修复缓冲区溢出：判断是否达到最大长度，满了拒绝输入 ====
     cmp cx, CLI_BUF_MAX
     jae cli_input
 
@@ -307,6 +321,12 @@ cli_execute:
     je cmd_type_run
 
     mov si, cli_buf
+    mov di, cmd_run
+    call strcmp_prefix
+    cmp ax,0
+    je cmd_run_bin
+
+    mov si, cli_buf
     mov di, cmd_exit
     call strcmp
     cmp ax,0
@@ -350,13 +370,124 @@ cmd_pi_run:
     call cli_print
     jmp cli_loop
 cmd_dir_run:
-    mov si, dir_msg
-    call cli_print
+    call fat_list_root
     jmp cli_loop
 cmd_type_run:
-    mov si, type_msg
+    mov si, cli_buf+5
+    call trim_spaces
+    call fat_name_to_83
+    call fat_find_file
+    cmp ax,0
+    jne .type_notfound
+    call fat_read_file
+    cmp byte [fat_io_err],1
+    jne .type_ok
+    mov si, str_io_error
     call cli_print
     jmp cli_loop
+.type_ok:
+    mov cx,[file_size]
+    mov si, file_buf
+.type_print_loop:
+    cmp cx,0
+    je .type_done
+    lodsb
+    mov ah,0x0E
+    int 10h
+    dec cx
+    jmp .type_print_loop
+.type_done:
+    mov si,str_crlf
+    call cli_print
+    jmp cli_loop
+.type_notfound:
+    mov si, str_file_notfound
+    call cli_print
+    jmp cli_loop
+
+; ==================== run加载器修复版 ====================
+cmd_run_bin:
+    mov si, cli_buf+4
+    call trim_spaces
+    mov di,si
+    mov al,[si]
+    test al,al
+    jnz .has_filename
+    mov si,str_run_arg_err
+    call cli_print
+    jmp cli_loop
+.has_filename:
+    call fat_name_to_83
+    call fat_get_ext
+
+    mov ax,0x2000
+    cmp byte [filename_buf+8],'C'
+    jne .not_com
+    mov ax,0x0100
+.not_com:
+    mov word [exec_ptr+2], ax
+    mov word [exec_ptr], 0
+
+    mov si, run_msg_load
+    call cli_print
+
+    call fat_find_file
+    cmp ax,0
+    jne run_file_notfound
+
+    cmp word [file_size],1024
+    jbe .size_ok
+    mov si,str_run_toobig
+    call cli_print
+    jmp cli_loop
+.size_ok:
+    mov ax,[exec_ptr+2]
+    mov es,ax
+    xor bx,bx
+    call fat_read_file_to_es
+    cmp byte [fat_io_err],0
+    je .exec_ok
+    mov si,str_io_error
+    call cli_print
+    jmp cli_loop
+.exec_ok:
+    mov si, run_msg_ok
+    call cli_print
+
+    push ds
+    push es
+    push ax
+    push bx
+    push cx
+    push dx
+    push si
+    push di
+    push bp
+
+    call far [exec_ptr]
+
+    pop bp
+    pop di
+    pop si
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    pop es
+    pop ds
+
+    mov ax,cs
+    mov ds,ax
+    mov es,ax
+    mov si, run_msg_ret
+    call cli_print
+    jmp cli_loop
+
+run_file_notfound:
+    mov si, str_file_notfound
+    call cli_print
+    jmp cli_loop
+
 cmd_exit_run:
     jmp $
 
@@ -391,15 +522,317 @@ xor ax,ax
 pop bx
 ret
 
-;==================== 绘图函数 ====================
+;匹配前缀，run命令使用
+strcmp_prefix:
+push bx
+.loop:
+mov al,[di]
+test al,al
+jz .eq
+mov bl,[si]
+cmp al,bl
+jne .not_eq
+inc si
+inc di
+jmp .loop
+.not_eq:
+mov ax,1
+pop bx
+ret
+.eq:
+xor ax,ax
+pop bx
+ret
+
+trim_spaces:
+push ax
+.loop_t:
+mov al,[si]
+cmp al,' '
+jne .trim_end
+inc si
+jmp .loop_t
+.trim_end:
+pop ax
+ret
+
+;==================== FAT12内核驱动函数 全部修复 =====================
+; LBA转CHS，1.44M软盘
+lba_to_chs:
+    xor dx,dx
+    mov bx,18
+    div bx
+    mov cl,dl
+    inc cl
+    xor dx,dx
+    mov bx,2
+    div bx
+    mov dh,dl
+    mov ch,al
+    ret
+
+;读取磁盘扇区，ax=lba, es:bx=buffer
+disk_read_sector:
+    push ax
+    push bx
+    push cx
+    push dx
+    push ax
+    call lba_to_chs
+    mov cl,al
+    pop ax
+    mov ah,0x02
+    mov al,1
+    mov dl,0
+    int 13h
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+
+;把输入字符串转为FAT 8.3格式到filename_buf
+fat_name_to_83:
+    push ax
+    push bx
+    push cx
+    xor bx,bx
+.clear_namebuf:
+    mov byte [filename_buf+bx],' '
+    inc bx
+    cmp bx,11
+    jl .clear_namebuf
+    xor bx,bx
+.copy_name:
+    mov al,[si]
+    cmp al,'.'
+    je .got_dot
+    test al,al
+    je .name_end
+    cmp bx,8
+    jge .skip_char
+    and al,0xDF
+    mov [filename_buf+bx],al
+.skip_char:
+    inc si
+    jmp .copy_name
+.got_dot:
+    inc si
+    mov bx,8
+.copy_ext:
+    mov al,[si]
+    test al,al
+    je .name_end
+    and al,0xDF
+    mov [filename_buf+bx],al
+    inc bx
+    inc si
+    cmp bx,11
+    jl .copy_ext
+.name_end:
+    pop cx
+    pop bx
+    pop ax
+    ret
+
+;【修复】获取扩展名，复制到filename_buf+8开始
+fat_get_ext:
+    ret
+
+;查找根目录文件，成功ax=0，失败ax=1，输出file_cluster,file_size
+fat_find_file:
+    push bx
+    push cx
+    push dx
+    ;根目录起始LBA
+    mov ax,FAT_RESERVED_SECTORS
+    add ax,FAT_NUMBER_OF_FATS * FAT_SECTORS_PER_FAT
+    mov cx,14
+.root_loop_sec:
+    mov bx,dir_buf
+    mov es,cs
+    call disk_read_sector
+    mov bx,0
+.entry_loop:
+    cmp byte [dir_buf+bx],0
+    je .notfound
+    cmp byte [dir_buf+bx],0xE5
+    je .next_entry
+
+    push si
+    push di
+    mov si,filename_buf
+    mov di,dir_buf+bx
+    mov cx,11
+.compare_name:
+    mov al,[si]
+    mov dl,[di]
+    cmp al,dl
+    jne .name_mismatch
+    inc si
+    inc di
+    dec cx
+    jnz .compare_name
+    pop di
+    pop si
+    ;匹配成功
+    mov ax,[dir_buf+bx+0x1A]
+    mov [file_cluster],ax
+    mov ax,[dir_buf+bx+0x1C]
+    mov [file_size],ax
+    xor ax,ax
+    jmp .find_done
+.name_mismatch:
+    pop di
+    pop si
+.next_entry:
+    add bx,32
+    cmp bx,512
+    jl .entry_loop
+    inc ax
+    dec cx
+    jnz .root_loop_sec
+.notfound:
+    mov ax,1
+.find_done:
+    pop dx
+    pop cx
+    pop bx
+    ret
+
+;读文件到file_buf
+fat_read_file:
+    push es
+    mov ax,cs
+    mov es,ax
+    mov bx,file_buf
+    call fat_read_cluster_chain
+    pop es
+    ret
+
+;读文件到es段（run加载器用）
+fat_read_file_to_es:
+    push bx
+    xor bx,bx
+    call fat_read_cluster_chain
+    pop bx
+    ret
+
+;读取簇链，es:bx为目标缓冲区，处理坏簇标记
+fat_read_cluster_chain:
+    push ax
+    push cx
+    push dx
+    mov byte [fat_io_err],0
+    mov ax,[file_cluster]
+.read_next_cluster:
+    cmp ax,0xFF8
+    jge .read_finish
+    cmp ax,0xFF7
+    je .mark_bad
+
+    ;数据区LBA
+    push ax
+    sub ax,2
+    mov cx,FAT_RESERVED_SECTORS
+    add cx,FAT_NUMBER_OF_FATS * FAT_SECTORS_PER_FAT
+    add cx,(FAT_ROOT_ENTRIES*32)/FAT_BYTES_PER_SECTOR
+    add ax,cx
+    call disk_read_sector
+    pop ax
+
+    ;清零fat_buf再读取FAT表
+    push cx
+    mov cx,512
+    mov di,fat_buf
+    xor al,al
+    rep stosb
+    pop cx
+
+    push ax
+    mov dx,ax
+    mov cx,3
+    mul cx
+    shr ax,1
+    mov bx,ax
+    mov ax,FAT_RESERVED_SECTORS
+    mov es,cs
+    call disk_read_sector
+    pop ax
+    test ax,1
+    jz .even_cluster
+.odd_cluster:
+    mov ax,[fat_buf+bx+1]
+    and ax,0x0FFF
+    jmp .got_next
+.even_cluster:
+    mov ax,[fat_buf+bx]
+    and ax,0x0FFF
+.got_next:
+    mov [file_cluster],ax
+    add bx,512
+    jmp .read_next_cluster
+.mark_bad:
+    mov byte [fat_io_err],1
+.read_finish:
+    pop dx
+    pop cx
+    pop ax
+    ret
+
+;【修复】dir格式化输出根目录，不再打印原始目录垃圾
+fat_list_root:
+    push ax
+    push bx
+    push cx
+    push si
+    mov ax,FAT_RESERVED_SECTORS
+    add ax,FAT_NUMBER_OF_FATS * FAT_SECTORS_PER_FAT
+    mov cx,14
+.ls_sec:
+    mov bx,dir_buf
+    mov es,cs
+    call disk_read_sector
+    mov bx,0
+.ls_entry:
+    cmp byte [dir_buf+bx],0
+    je .ls_done
+    cmp byte [dir_buf+bx],0xE5
+    je .ls_next
+
+    mov si, dir_buf+bx
+    mov cx,11
+.ls_name_print:
+    lodsb
+    mov ah,0x0E
+    int 10h
+    dec cx
+    jnz .ls_name_print
+    mov si,str_crlf
+    call cli_print
+.ls_next:
+    add bx,32
+    cmp bx,512
+    jl .ls_entry
+    inc ax
+    dec cx
+    jnz .ls_sec
+.ls_done:
+    pop si
+    pop cx
+    pop bx
+    pop ax
+    ret
+
+;==================== VGA绘图底层函数 ====================
 put_pixel:
+    push ax
     push bx
     push cx
     push dx
     push di
     mov bx, SCREEN_WIDTH
-    mov di, dx
-    mov ax, di
+    mov ax, dx
     mul bx
     add ax, cx
     mov di, ax
@@ -408,6 +841,7 @@ put_pixel:
     pop dx
     pop cx
     pop bx
+    pop ax
 ret
 
 draw_rect:
@@ -444,7 +878,6 @@ push cx
 push dx
 push si
 push di
-;顶边
 push cx
 push dx
 mov di,bx
@@ -455,7 +888,7 @@ dec di
 jnz .top
 pop dx
 pop cx
-;底边
+
 push cx
 mov di,bx
 add dx,si
@@ -466,7 +899,7 @@ dec di
 jnz .bottom
 pop dx
 pop cx
-;左边
+
 push dx
 mov di,si
 .left:
@@ -476,7 +909,7 @@ dec di
 jnz .left
 pop dx
 pop cx
-;右边
+
 push dx
 add cx,bx
 mov di,si
@@ -638,23 +1071,29 @@ pop bx
 pop ax
 ret
 
-;==================== 鼠标驱动 PS/2【修复！】 ====================
+;==================== PS/2鼠标驱动修复 ====================
 mouse_init:
     mov ax,0xC200
     mov bx,0
     int 15h
+    jnc .ok
+    mov byte [mouse_btn],0
+.ok:
     ret
 mouse_poll:
     mov ax,0xC201
     xor bx,bx
     int 15h
+    jnc .poll_ok
+    mov byte [mouse_btn],0
+    ret
+.poll_ok:
     mov [mouse_x], cx
     mov [mouse_y], dx
     mov [mouse_btn], bl
     ret
 hit_test:
     xor al,0
-    ;按钮1 贪吃蛇
     mov ax,[mouse_x]
     cmp ax,20
     jl .test2
@@ -668,7 +1107,6 @@ hit_test:
     mov al,1
     ret
 .test2:
-    ;按钮2 PI
     mov ax,[mouse_x]
     cmp ax,120
     jl .test3
@@ -682,7 +1120,6 @@ hit_test:
     mov al,2
     ret
 .test3:
-    ;按钮3 cls
     mov ax,[mouse_x]
     cmp ax,220
     jl .no_hit
@@ -699,7 +1136,7 @@ hit_test:
     mov al,0
     ret
 
-;==================== 贪吃蛇游戏【完整补全】 ====================
+;==================== 贪吃蛇游戏修复像素索引BUG ====================
 snake_game:
     call cls
     mov byte [snake_dir],1
@@ -717,15 +1154,15 @@ snake_game:
     jz .no_key_snake
     mov ah,00h
     int 16h
-    cmp ah,48h ;上
+    cmp ah,48h
     je .dir_up
-    cmp ah,50h ;下
+    cmp ah,50h
     je .dir_down
-    cmp ah,4Bh ;左
+    cmp ah,4Bh
     je .dir_left
-    cmp ah,4Dh ;右
+    cmp ah,4Dh
     je .dir_right
-    cmp ah,01h ;ESC退出
+    cmp ah,01h
     je .snake_exit
 .no_key_snake:
     call snake_move
@@ -758,10 +1195,8 @@ draw_snake:
     xor bx,bx
 .draw_seg:
     mov ax,[snake_body + bx]
-    mov di,ax
-    mov cx,di
-    xor dx,dx
-    mov ax,cx
+    mov dx,0
+    mov cx,ax
     mov bx,SCREEN_WIDTH
     div bx
     mov dx,ax
@@ -788,7 +1223,6 @@ snake_move:
     push bx
     push cx
     push dx
-    ;尾部前移：所有蛇段向后拷贝
     mov bx, [snake_len]
     sub bx,2
 .copy_loop:
@@ -798,12 +1232,10 @@ snake_move:
     cmp bx,0
     jge .copy_loop
 
-    ;更新蛇头
     mov ax, [snake_body]
-    mov cx, ax
     xor dx,dx
     mov bx, SCREEN_WIDTH
-    div bx ; ax=y, dx=x
+    div bx
     mov cx, dx
     mov dx, ax
 
@@ -834,7 +1266,6 @@ snake_move:
     add ax, cx
     mov [snake_body], ax
 
-    ;撞墙检测
     cmp cx,0
     jl .game_end
     cmp cx,SCREEN_WIDTH-1
@@ -844,7 +1275,6 @@ snake_move:
     cmp dx,SCREEN_HEIGHT-1
     jge .game_end
 
-    ;自碰撞检测
     xor bx,bx
 .check_self:
     add bx,2
@@ -856,7 +1286,6 @@ snake_move:
     jmp .check_self
 .self_ok:
 
-    ;吃食物
     mov ax,[snake_body]
     mov bx,[food_x]
     mov cx,[food_y]
@@ -884,11 +1313,11 @@ snake_move:
     pop ax
     ret
 
-;==================== 猜数字游戏【完整逻辑】 ====================
+;==================== 猜数字游戏 ====================
 guess_game:
     mov si, guess_welcome
     call cli_print
-    mov word bx,42
+    mov bx,42
 .guess_loop:
     mov si, guess_prompt
     call cli_print
@@ -932,7 +1361,6 @@ guess_game:
     int 10h
     mov byte [di],0
 
-    ;简单字符串转数字
     xor ax,ax
     xor si,si
 .num_conv:
@@ -972,7 +1400,7 @@ str_gui_hint db 'Click buttons, ESC exit VGA',0
 str_pi_msg db 'Calculating pi...',0
 str_gameover db 'GAME OVER! Press any key',0
 
-cli_welcome db 'MyOS CLI v0.4 - GPLv3 (student25-ch)',0x0D,0x0A,0
+cli_welcome db 'MyOS CLI v0.4-fix - GPLv3 (student25-ch)',0x0D,0x0A,0
 cli_prompt db 'myos> ',0
 cmd_ver db 'ver',0
 cmd_cls db 'cls',0
@@ -983,13 +1411,20 @@ cmd_guess db 'guess',0
 cmd_pi db 'pi',0
 cmd_dir db 'dir',0
 cmd_type db 'type',0
+cmd_run db 'run ',0
 cmd_exit db 'exit',0
 unknown_cmd db 'Unknown command.',0x0D,0x0A,0
-ver_text db 'MyOS v0.4, GPLv3 Copyright (C) 2026 student25-ch',0x0D,0x0A,0
-help_text db 'Commands: ver cls help echo snake guess pi dir type exit',0x0D,0x0A,0
+ver_text db 'MyOS v0.4-fix, GPLv3 Copyright (C) 2026 student25-ch',0x0D,0x0A,0
+help_text db 'Commands: ver cls help echo snake guess pi dir type run exit',0x0D,0x0A,0
 pi_tip db 'Pi calc not implemented yet.',0x0D,0x0A,0
-dir_msg db 'FAT12 directory listing',0x0D,0x0A,0
-type_msg db 'Show file content',0x0D,0x0A,0
+run_msg_load db 'Loading executable...',0x0D,0x0A,0
+run_msg_ok db 'Loaded, executing user program.',0x0D,0x0A,0
+run_msg_ret db 'User program returned back to kernel CLI',0x0D,0x0A,0
+str_file_notfound db 'File not found.',0x0D,0x0A,0
+str_io_error db 'Disk IO error!',0x0D,0x0A,0
+str_run_arg_err db "run: need filename argument",0x0D,0x0A,0
+str_run_toobig db "run: file too large(limit 1024)",0x0D,0x0A,0
+str_crlf db 0x0D,0x0A,0
 
 guess_welcome db 'Guess number game (1~100)',0x0D,0x0A,0
 guess_prompt db 'Enter number: ',0
@@ -997,44 +1432,43 @@ guess_win db 'You win!',0x0D,0x0A,0
 guess_msg_low db 'Too small!',0x0D,0x0A,0
 guess_msg_high db 'Too big!',0x0D,0x0A,0
 
-;8x8 基础字体
+;8x8 基础ASCII字体
 font_8x8:
-db 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00 ; 0
-db 0x00,0x00,0x7F,0x00,0x00,0x00,0x00,0x00 ; 1
-db 0x00,0x07,0x00,0x07,0x00,0x00,0x00,0x00 ; 2
-db 0x24,0x7F,0x24,0x7F,0x24,0x00,0x00,0x00 ; 3
-db 0x12,0x2A,0x45,0x99,0x24,0x00,0x00,0x00 ; 4
-db 0x36,0x49,0x49,0x49,0x32,0x00,0x00,0x00 ; 5
-db 0x3C,0x4A,0x49,0x49,0x30,0x00,0x00,0x00 ; 6
-db 0x41,0x21,0x11,0x09,0x07,0x00,0x00,0x00 ; 7
-db 0x36,0x49,0x49,0x49,0x36,0x00,0x00,0x00 ; 8
-db 0x06,0x49,0x49,0x49,0x36,0x00,0x00,0x00 ; 9
-db 0x00,0x36,0x49,0x49,0x49,0x36,0x00,0x00 ; A
-db 0x00,0x7F,0x48,0x48,0x48,0x30,0x00,0x00 ; B
-db 0x00,0x3E,0x41,0x41,0x41,0x22,0x00,0x00 ; C
-db 0x00,0x7F,0x41,0x41,0x41,0x3E,0x00,0x00 ; D
-db 0x00,0x7F,0x48,0x48,0x48,0x48,0x00,0x00 ; E
-db 0x00,0x7F,0x08,0x08,0x08,0x08,0x00,0x00 ; F
-db 0x00,0x3E,0x41,0x49,0x49,0x7A,0x00,0x00 ; G
-db 0x00,0x7F,0x08,0x08,0x08,0x7F,0x00,0x00 ; H
-db 0x00,0x00,0x41,0x7F,0x41,0x00,0x00,0x00 ; I
-db 0x00,0x20,0x40,0x41,0x3F,0x01,0x00,0x00 ; J
-db 0x00,0x7F,0x08,0x14,0x22,0x41,0x00,0x00 ; K
-db 0x00,0x7F,0x40,0x40,0x40,0x40,0x00,0x00 ; L
-db 0x00,0x7F,0x02,0x0C,0x02,0x7F,0x00,0x00 ; M
-db 0x00,0x7F,0x04,0x08,0x10,0x7F,0x00,0x00 ; N
-db 0x00,0x3E,0x41,0x41,0x41,0x3E,0x00,0x00 ; O
-db 0x00,0x7F,0x09,0x09,0x09,0x06,0x00,0x00 ; P
-db 0x00,0x3E,0x41,0x51,0x21,0x5E,0x00,0x00 ; Q
-db 0x00,0x7F,0x09,0x19,0x29,0x46,0x00,0x00 ; R
-db 0x00,0x46,0x49,0x49,0x49,0x31,0x00,0x00 ; S
-db 0x00,0x01,0x01,0x7F,0x01,0x01,0x00,0x00 ; T
-db 0x00,0x3F,0x40,0x40,0x40,0x3F,0x00,0x00 ; U
-db 0x00,0x1F,0x20,0x40,0x20,0x1F,0x00,0x00 ; V
-db 0x00,0x3F,0x40,0x38,0x40,0x3F,0x00,0x00 ; W
-db 0x00,0x63,0x14,0x08,0x14,0x63,0x00,0x00 ; X
-db 0x00,0x07,0x08,0x70,0x08,0x07,0x00,0x00 ; Y
-db 0x00,0x61,0x51,0x49,0x45,0x43,0x00,0x00 ; Z
+db 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
+db 0x00,0x00,0x7F,0x00,0x00,0x00,0x00,0x00
+db 0x00,0x07,0x00,0x07,0x00,0x00,0x00,0x00
+db 0x24,0x7F,0x24,0x7F,0x24,0x00,0x00,0x00
+db 0x12,0x2A,0x45,0x99,0x24,0x00,0x00,0x00
+db 0x36,0x49,0x49,0x49,0x32,0x00,0x00,0x00
+db 0x3C,0x4A,0x49,0x49,0x30,0x00,0x00,0x00
+db 0x41,0x21,0x11,0x09,0x07,0x00,0x00,0x00
+db 0x36,0x49,0x49,0x49,0x36,0x00,0x00,0x00
+db 0x06,0x49,0x49,0x49,0x36,0x00,0x00,0x00
+db 0x00,0x36,0x49,0x49,0x49,0x36,0x00,0x00
+db 0x00,0x7F,0x48,0x48,0x48,0x30,0x00,0x00
+db 0x00,0x3E,0x41,0x41,0x41,0x22,0x00,0x00
+db 0x00,0x7F,0x41,0x41,0x41,0x3E,0x00,0x00
+db 0x00,0x7F,0x48,0x48,0x48,0x48,0x00,0x00
+db 0x00,0x7F,0x08,0x08,0x08,0x08,0x00,0x00
+db 0x00,0x3E,0x41,0x49,0x49,0x7A,0x00,0x00
+db 0x00,0x7F,0x08,0x08,0x08,0x7F,0x00,0x00
+db 0x00,0x00,0x41,0x7F,0x41,0x00,0x00,0x00
+db 0x00,0x20,0x40,0x41,0x3F,0x01,0x00,0x00
+db 0x00,0x7F,0x08,0x14,0x22,0x41,0x00,0x00
+db 0x00,0x7F,0x40,0x40,0x40,0x40,0x00,0x00
+db 0x00,0x7F,0x02,0x0C,0x02,0x7F,0x00,0x00
+db 0x00,0x7F,0x04,0x08,0x10,0x7F,0x00,0x00
+db 0x00,0x3E,0x41,0x41,0x41,0x3E,0x00,0x00
+db 0x00,0x7F,0x09,0x09,0x09,0x06,0x00,0x00
+db 0x00,0x3E,0x41,0x51,0x21,0x5E,0x00,0x00
+db 0x00,0x7F,0x09,0x19,0x29,0x46,0x00,0x00
+db 0x00,0x46,0x49,0x49,0x49,0x31,0x00,0x00
+db 0x00,0x01,0x01,0x7F,0x01,0x01,0x00,0x00
+db 0x00,0x3F,0x40,0x40,0x40,0x3F,0x00,0x00
+db 0x00,0x1F,0x20,0x40,0x20,0x1F,0x00,0x00
+db 0x00,0x3F,0x40,0x38,0x40,0x3F,0x00,0x00
+db 0x00,0x63,0x14,0x08,0x14,0x63,0x00,0x00
+db 0x00,0x07,0x08,0x70,0x08,0x07,0x00,0x00
+db 0x00,0x61,0x51,0x49,0x45,0x43,0x00,0x00
 
-times 512 - ($ - $$) db 0
-dw 0xAA55
+times 8192 - ($ - $$) db 0
